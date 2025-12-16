@@ -1,0 +1,260 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { Tab, Topic } from './types';
+import { DEFAULT_SOURCE_URL, LOCAL_STORAGE_KEYS } from './constants';
+import { fetchTopics, getNextRandomTopic, getTopicById } from './services/topicService';
+import { taskManager } from './services/taskManager';
+import { HeartButton } from './components/HeartButton';
+import { DisplayBox } from './components/DisplayBox';
+import { TabBar } from './components/TabBar';
+
+// Safe Area padding for bottom nav
+const CONTENT_PADDING = "pb-32";
+
+const App: React.FC = () => {
+  // -- State --
+  const [currentTab, setCurrentTab] = useState<Tab>(Tab.EXTRACT);
+  const [topics, setTopics] = useState<Topic[]>([]);
+  const [seenTopicIds, setSeenTopicIds] = useState<number[]>([]);
+  const [clickCount, setClickCount] = useState<number>(0);
+  const [sourceUrl, setSourceUrl] = useState<string>(DEFAULT_SOURCE_URL);
+  
+  // UI State
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [currentTopic, setCurrentTopic] = useState<Topic | null>(null);
+  const [isAllSeen, setIsAllSeen] = useState<boolean>(false);
+
+  // Search Tab State
+  const [searchIndex, setSearchIndex] = useState<string>('');
+  const [searchResult, setSearchResult] = useState<Topic | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+
+  // -- Initialization --
+  useEffect(() => {
+    // Load persisted state
+    const savedUrl = localStorage.getItem(LOCAL_STORAGE_KEYS.SOURCE_URL);
+    const savedSeen = localStorage.getItem(LOCAL_STORAGE_KEYS.SEEN_TOPICS);
+    const savedClicks = localStorage.getItem(LOCAL_STORAGE_KEYS.CLICK_COUNT);
+
+    if (savedUrl) setSourceUrl(savedUrl);
+    if (savedSeen) setSeenTopicIds(JSON.parse(savedSeen));
+    if (savedClicks) setClickCount(parseInt(savedClicks, 10));
+
+    // Initial fetch
+    loadTopics(savedUrl || DEFAULT_SOURCE_URL);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadTopics = async (url: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await fetchTopics(url);
+      if (data.length === 0) {
+        setError("Loaded successfully, but found no text lines in the file.");
+      } else {
+        setTopics(data);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // -- Feature 1: Topic Extraction --
+  const handleExtractClick = useCallback(() => {
+    if (topics.length === 0) {
+      // If user clicks but we have no topics, try reloading or showing error
+      if (!isLoading && !error) {
+         setError("No topics available. Check Settings URL.");
+      }
+      return;
+    }
+
+    // 1. Placeholder Logic
+    taskManager.check_special_task();
+
+    // 2. Increment Click Counter (Logic: Odd=Green, Even=Pink)
+    const newCount = clickCount + 1;
+    setClickCount(newCount);
+    localStorage.setItem(LOCAL_STORAGE_KEYS.CLICK_COUNT, newCount.toString());
+
+    // 3. Smart Caching & Randomization
+    const nextTopic = getNextRandomTopic(topics, seenTopicIds);
+
+    if (nextTopic) {
+      setCurrentTopic(nextTopic);
+      setIsAllSeen(false);
+      
+      // Update Seen
+      const newSeen = [...seenTopicIds, nextTopic.id];
+      setSeenTopicIds(newSeen);
+      localStorage.setItem(LOCAL_STORAGE_KEYS.SEEN_TOPICS, JSON.stringify(newSeen));
+    } else {
+      setIsAllSeen(true);
+      setCurrentTopic(null);
+    }
+  }, [clickCount, topics, seenTopicIds, isLoading, error]);
+
+  // -- Feature 2: Index Search --
+  const handleSearch = () => {
+    const id = parseInt(searchIndex, 10);
+    if (isNaN(id)) {
+      setSearchError('Please enter a valid number');
+      setSearchResult(null);
+      return;
+    }
+
+    const found = getTopicById(topics, id);
+    if (found) {
+      setSearchResult(found);
+      setSearchError(null);
+    } else {
+      setSearchResult(null);
+      setSearchError('Topic not found in the current list.');
+    }
+  };
+
+  // -- Feature 4: Settings --
+  const handleUrlSave = () => {
+    localStorage.setItem(LOCAL_STORAGE_KEYS.SOURCE_URL, sourceUrl);
+    // Reset state on new source
+    setSeenTopicIds([]);
+    setClickCount(0);
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.SEEN_TOPICS);
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.CLICK_COUNT);
+    
+    loadTopics(sourceUrl);
+    setCurrentTab(Tab.EXTRACT);
+  };
+
+  const handleClearCache = () => {
+    if (window.confirm("Are you sure you want to clear history? You will see repeated topics.")) {
+      setSeenTopicIds([]);
+      setClickCount(0);
+      setIsAllSeen(false);
+      localStorage.removeItem(LOCAL_STORAGE_KEYS.SEEN_TOPICS);
+      localStorage.removeItem(LOCAL_STORAGE_KEYS.CLICK_COUNT);
+    }
+  };
+
+  // -- Background Logic --
+  // If Total Clicks is Odd: Fresh Green. Even: Pastel Pink.
+  // Initial (0) is Even -> Pink.
+  const bgColorClass = clickCount % 2 !== 0 ? 'bg-freshGreen' : 'bg-pastelPink';
+
+  // -- Render Helpers --
+  const renderExtractTab = () => (
+    <div className="flex flex-col items-center justify-center h-full space-y-12 animate-in fade-in duration-500">
+      <DisplayBox 
+        topic={currentTopic} 
+        isLoading={isLoading} 
+        error={error}
+        isAllSeen={isAllSeen}
+      />
+      <HeartButton onClick={handleExtractClick} disabled={isLoading || !!error} />
+      <div className="text-darkGrey/50 text-sm font-medium">
+        Clicks: {clickCount}
+      </div>
+    </div>
+  );
+
+  const renderIndexTab = () => (
+    <div className="w-full max-w-md bg-white/60 backdrop-blur-md rounded-[2rem] p-6 shadow-sm border-2 border-white animate-in slide-in-from-bottom-4 duration-300">
+      <h2 className="text-2xl font-bold text-darkGrey mb-6 text-center">Topic Search</h2>
+      
+      <div className="flex gap-2 mb-6">
+        <input
+          type="number"
+          value={searchIndex}
+          onChange={(e) => setSearchIndex(e.target.value)}
+          placeholder="Enter Index #"
+          className="flex-1 px-4 py-3 rounded-xl border-2 border-white bg-white/80 text-darkGrey placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all"
+        />
+        <button 
+          onClick={handleSearch}
+          className="bg-darkGrey text-white px-6 py-3 rounded-xl font-bold active:scale-95 transition-transform"
+        >
+          Search
+        </button>
+      </div>
+
+      <div className="min-h-[150px] flex items-center justify-center bg-white/40 rounded-xl p-4 border border-white/50">
+        {searchError ? (
+          <p className="text-red-500 font-medium">{searchError}</p>
+        ) : searchResult ? (
+          <div className="text-center">
+             <span className="inline-block bg-cream text-darkGrey text-xs font-bold px-2 py-1 rounded-full mb-2">
+                #{searchResult.id}
+             </span>
+             <p className="text-lg font-bold text-darkGrey">{searchResult.content}</p>
+          </div>
+        ) : (
+          <p className="text-darkGrey/40 italic">Result will appear here</p>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderSettingsTab = () => (
+    <div className="w-full max-w-md bg-white/60 backdrop-blur-md rounded-[2rem] p-6 shadow-sm border-2 border-white animate-in slide-in-from-bottom-4 duration-300">
+      <h2 className="text-2xl font-bold text-darkGrey mb-6 text-center">Settings</h2>
+
+      <div className="mb-6">
+        <label className="block text-darkGrey font-bold mb-2 ml-1">Source URL (Raw Text)</label>
+        <textarea
+          value={sourceUrl}
+          onChange={(e) => setSourceUrl(e.target.value)}
+          className="w-full h-24 px-4 py-3 rounded-xl border-2 border-white bg-white/80 text-darkGrey text-sm focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all resize-none"
+        />
+        <p className="text-xs text-darkGrey/60 mt-2 ml-1">
+          Format: "Index. Content" per line.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <button 
+          onClick={handleUrlSave}
+          className="w-full bg-darkGrey text-white py-3 rounded-xl font-bold active:scale-95 transition-transform shadow-lg"
+        >
+          Update Source & Reset
+        </button>
+
+        <button 
+          onClick={handleClearCache}
+          className="w-full bg-white text-red-500 border-2 border-red-200 py-3 rounded-xl font-bold active:scale-95 transition-transform hover:bg-red-50"
+        >
+          Clear History Only
+        </button>
+      </div>
+
+      <div className="mt-8 text-center text-xs text-darkGrey/40">
+        Couple Topic Extractor v1.0
+      </div>
+    </div>
+  );
+
+  return (
+    <div className={`min-h-screen transition-colors duration-1000 ease-in-out ${bgColorClass} flex flex-col font-sans overflow-hidden`}>
+      {/* Header Area */}
+      <header className="pt-8 pb-4 px-6 text-center">
+        <h1 className="text-3xl font-black text-white drop-shadow-md tracking-wide">
+          Couple Topics
+        </h1>
+      </header>
+
+      {/* Main Content Area */}
+      <main className={`flex-1 flex flex-col items-center justify-start pt-4 px-4 ${CONTENT_PADDING} overflow-y-auto`}>
+        {currentTab === Tab.EXTRACT && renderExtractTab()}
+        {currentTab === Tab.INDEX && renderIndexTab()}
+        {currentTab === Tab.SETTINGS && renderSettingsTab()}
+      </main>
+
+      {/* Navigation */}
+      <TabBar currentTab={currentTab} onTabChange={setCurrentTab} />
+    </div>
+  );
+};
+
+export default App;
