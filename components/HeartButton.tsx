@@ -5,6 +5,11 @@ interface HeartButtonProps {
   disabled?: boolean;
 }
 
+/**
+ * HeartButton 组件
+ * 一个巨大的爱心形状按钮，用于触发话题抽取。
+ * 包含 SVG 绘制的爱心和点击时的缩放动画。
+ */
 export const HeartButton: React.FC<HeartButtonProps> = ({ onClick, disabled }) => {
   return (
     <button
@@ -14,10 +19,10 @@ export const HeartButton: React.FC<HeartButtonProps> = ({ onClick, disabled }) =
         relative group transform transition-all duration-300 active:scale-90
         ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105 cursor-pointer'}
       `}
-      aria-label="Get new topic"
+      aria-label="获取新话题"
     >
       <div className="relative w-24 h-24 sm:w-32 sm:h-32">
-        {/* Heart Shape using SVG */}
+        {/* 使用 SVG 绘制爱心形状 */}
         <svg
           viewBox="0 0 32 29.6"
           className="w-full h-full drop-shadow-xl filter"
@@ -30,7 +35,7 @@ export const HeartButton: React.FC<HeartButtonProps> = ({ onClick, disabled }) =
           />
         </svg>
         <span className="absolute inset-0 flex items-center justify-center text-white font-bold text-lg sm:text-xl pointer-events-none">
-          Click Me!
+          点我!
         </span>
       </div>
     </button>

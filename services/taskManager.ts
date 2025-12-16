@@ -1,14 +1,14 @@
 /**
- * TaskManager
- * Handles background tasks and special logic triggers.
+ * TaskManager (任务管理器)
+ * 处理后台任务和特殊逻辑触发。
  */
 export class TaskManager {
   /**
-   * Checks for special tasks based on application state.
-   * Future implementation: trigger color reversal tasks for specific users.
+   * 检查是否需要触发特殊任务。
+   * 未来实现：为特定用户触发颜色反转任务等彩蛋功能。
    */
   public check_special_task(): void {
-    // pass
+    // 占位符 (Pass)
   }
 }
 

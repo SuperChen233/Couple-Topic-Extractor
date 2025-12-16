@@ -6,11 +6,16 @@ interface TabBarProps {
   onTabChange: (tab: Tab) => void;
 }
 
+/**
+ * TabBar 组件
+ * 底部导航栏，用于在抽取、检索和设置页面之间切换。
+ * 选中状态会有上浮和阴影效果。
+ */
 export const TabBar: React.FC<TabBarProps> = ({ currentTab, onTabChange }) => {
   const tabs = [
-    { id: Tab.EXTRACT, label: 'Extract', icon: '✨' },
-    { id: Tab.INDEX, label: 'Index', icon: '🔍' },
-    { id: Tab.SETTINGS, label: 'Settings', icon: '⚙️' },
+    { id: Tab.EXTRACT, label: '抽取', icon: '✨' },
+    { id: Tab.INDEX, label: '检索', icon: '🔍' },
+    { id: Tab.SETTINGS, label: '设置', icon: '⚙️' },
   ];
 
   return (
