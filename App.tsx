@@ -23,21 +23,33 @@ const App: React.FC = () => {
   const [isOfflineMode, setIsOfflineMode] = useState<boolean>(false);
   const [fetchSource, setFetchSource] = useState<string>('');
   const [currentTopic, setCurrentTopic] = useState<Topic | null>(null);
-  const [isAllSeen, setIsAllSeen] = useState<boolean>(false);
 
+  // 检索页状态
   const [searchIndex, setSearchIndex] = useState<string>('');
   const [searchResult, setSearchResult] = useState<Topic | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [selectedBrowseCategory, setSelectedBrowseCategory] = useState<string>('all');
 
-  // 计算所有唯一的分类
+  // 所有分类
   const allCategories = useMemo(() => {
-    return Array.from(new Set(topics.map(t => t.category || '默认话题')));
+    return Array.from(new Set(topics.map(t => t.category || '默认话题'))).sort();
   }, [topics]);
 
-  // 根据禁用的分类过滤出当前可用的所有话题
+  // 当前启用的分类话题
   const filteredTopics = useMemo(() => {
     return topics.filter(t => !disabledCategories.includes(t.category || '默认话题'));
   }, [topics, disabledCategories]);
+
+  // 全量库已读数 (去重并校验存在性)
+  const globalSeenCount = useMemo(() => {
+    const currentIds = new Set(topics.map(t => t.id));
+    return seenTopicIds.filter(id => currentIds.has(id)).length;
+  }, [seenTopicIds, topics]);
+
+  // 当前范围内未读数
+  const unreadInScope = useMemo(() => {
+    return filteredTopics.filter(t => !seenTopicIds.includes(t.id)).length;
+  }, [filteredTopics, seenTopicIds]);
 
   const loadTopics = async (url: string) => {
     setIsLoading(true);
@@ -47,6 +59,9 @@ const App: React.FC = () => {
       setTopics(data);
       setIsOfflineMode(isOffline);
       setFetchSource(source);
+      // 加载新源后，清理不存在的已读 ID
+      const validIds = new Set(data.map(t => t.id));
+      setSeenTopicIds(prev => prev.filter(id => validIds.has(id)));
     } catch (err) {
       setError(err instanceof Error ? err.message : '连接异常');
       setIsOfflineMode(true);
@@ -64,29 +79,21 @@ const App: React.FC = () => {
     if (savedUrl) setSourceUrl(savedUrl);
     if (savedSeen) {
       try {
-        setSeenTopicIds(JSON.parse(savedSeen));
-      } catch (e) {
-        setSeenTopicIds([]);
-      }
+        const parsed = JSON.parse(savedSeen);
+        setSeenTopicIds(Array.isArray(parsed) ? Array.from(new Set(parsed)) : []);
+      } catch { setSeenTopicIds([]); }
     }
     if (savedClicks) setClickCount(parseInt(savedClicks, 10));
     if (savedDisabled) {
-      try {
-        setDisabledCategories(JSON.parse(savedDisabled));
-      } catch (e) {
-        setDisabledCategories([]);
-      }
+      try { setDisabledCategories(JSON.parse(savedDisabled)); } catch { setDisabledCategories([]); }
     }
-
     loadTopics(savedUrl || DEFAULT_SOURCE_URL);
   }, []);
 
   const handleExtractClick = useCallback(() => {
-    if (filteredTopics.length === 0) {
-      if (topics.length > 0) {
+    if (unreadInScope === 0) {
+      if (filteredTopics.length === 0) {
         setError("当前分类已全部屏蔽");
-      } else if (!isLoading) {
-        loadTopics(sourceUrl);
       }
       return;
     }
@@ -94,28 +101,29 @@ const App: React.FC = () => {
     setError(null);
     taskManager.check_special_task();
 
-    const newCount = clickCount + 1;
-    setClickCount(newCount);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.CLICK_COUNT, newCount.toString());
-
     const nextTopic = getNextRandomTopic(filteredTopics, seenTopicIds);
 
     if (nextTopic) {
       setCurrentTopic(nextTopic);
-      setIsAllSeen(false);
-      const newSeen = [...seenTopicIds, nextTopic.id];
-      setSeenTopicIds(newSeen);
-      localStorage.setItem(LOCAL_STORAGE_KEYS.SEEN_TOPICS, JSON.stringify(newSeen));
-    } else {
-      setIsAllSeen(true);
-      setCurrentTopic(null);
+      
+      // 使用函数式更新确保计数准确
+      setSeenTopicIds(prev => {
+        const newSet = new Set([...prev, nextTopic.id]);
+        const newArr = Array.from(newSet);
+        localStorage.setItem(LOCAL_STORAGE_KEYS.SEEN_TOPICS, JSON.stringify(newArr));
+        return newArr;
+      });
+
+      const newCount = clickCount + 1;
+      setClickCount(newCount);
+      localStorage.setItem(LOCAL_STORAGE_KEYS.CLICK_COUNT, newCount.toString());
     }
-  }, [clickCount, filteredTopics, topics.length, seenTopicIds, isLoading, sourceUrl]);
+  }, [unreadInScope, filteredTopics, seenTopicIds, clickCount]);
 
   const handleSearch = () => {
     const id = parseInt(searchIndex, 10);
     if (isNaN(id)) {
-      setSearchError('请输入数字序号');
+      setSearchError('请输入数字');
       setSearchResult(null);
       return;
     }
@@ -123,11 +131,17 @@ const App: React.FC = () => {
     if (found) {
       setSearchResult(found);
       setSearchError(null);
+      setSelectedBrowseCategory(found.category);
     } else {
       setSearchResult(null);
       setSearchError('未找到该话题');
     }
   };
+
+  const browseList = useMemo(() => {
+    if (selectedBrowseCategory === 'all') return [];
+    return topics.filter(t => t.category === selectedBrowseCategory);
+  }, [topics, selectedBrowseCategory]);
 
   const handleUrlSave = () => {
     localStorage.setItem(LOCAL_STORAGE_KEYS.SOURCE_URL, sourceUrl);
@@ -151,18 +165,10 @@ const App: React.FC = () => {
     }
   };
 
-  const toggleAllCategories = (disableAll: boolean) => {
-    const newDisabled = disableAll ? [...allCategories] : [];
-    setDisabledCategories(newDisabled);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.DISABLED_CATEGORIES, JSON.stringify(newDisabled));
-    if (disableAll) setCurrentTopic(null);
-  };
-
   const handleClearCache = () => {
     if (window.confirm("确定要清除历史进度吗？")) {
       setSeenTopicIds([]);
       setClickCount(0);
-      setIsAllSeen(false);
       localStorage.removeItem(LOCAL_STORAGE_KEYS.SEEN_TOPICS);
       localStorage.removeItem(LOCAL_STORAGE_KEYS.CLICK_COUNT);
     }
@@ -176,77 +182,111 @@ const App: React.FC = () => {
         topic={currentTopic} 
         isLoading={isLoading} 
         error={error}
-        isAllSeen={isAllSeen}
+        isAllSeen={unreadInScope === 0 && filteredTopics.length > 0}
       />
       
-      <HeartButton onClick={handleExtractClick} disabled={isLoading} />
+      <HeartButton onClick={handleExtractClick} disabled={isLoading || (unreadInScope === 0 && filteredTopics.length > 0)} />
       
       <div className="flex flex-col items-center gap-3">
-        <div className="text-white font-bold text-xs bg-black/10 px-4 py-1.5 rounded-full backdrop-blur-sm shadow-inner">
-          已探索: {seenTopicIds.filter(id => topics.some(t => t.id === id)).length} / {topics.length}
-          {filteredTopics.length < topics.length && <span className="ml-1 opacity-70">(可用: {filteredTopics.length})</span>}
+        <div className="text-white font-bold text-[11px] bg-black/10 px-6 py-2 rounded-full backdrop-blur-sm shadow-inner flex flex-col items-center gap-1 min-w-[180px]">
+          <div className="flex justify-between w-full gap-8">
+            <span>总已读:</span>
+            <span>{globalSeenCount} / {topics.length}</span>
+          </div>
+          <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden mt-1">
+             <div 
+               className="h-full bg-white transition-all duration-500" 
+               style={{ width: `${(globalSeenCount / (topics.length || 1)) * 100}%` }}
+             ></div>
+          </div>
+          <p className="text-[9px] opacity-70 mt-1 uppercase tracking-widest">
+            当前分类剩余: {unreadInScope}
+          </p>
         </div>
         
         <div className="flex items-center gap-2">
-          {isOfflineMode ? (
-            <div className="group relative">
-               <button 
-                onClick={() => loadTopics(sourceUrl)}
-                disabled={isLoading}
-                className="text-[10px] text-white/80 font-bold bg-orange-400/40 hover:bg-orange-400/60 px-3 py-1 rounded-full border border-white/20 flex items-center gap-1 transition-all"
-               >
-                 <span>⚠️ 离线模式</span>
-                 <span className={isLoading ? 'animate-spin' : ''}>🔄</span>
-               </button>
-               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-darkGrey text-white text-[9px] px-2 py-1 rounded whitespace-nowrap z-10">
-                 数据源: {fetchSource}
-               </div>
-            </div>
-          ) : (
-            <div className="text-[10px] text-white/50 font-bold flex items-center gap-1">
-              <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></span>
-              云端已同步 ({fetchSource})
-            </div>
-          )}
+          <div className="text-[10px] text-white/50 font-bold flex items-center gap-1">
+            <span className={isLoading ? "animate-spin" : "w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"}>
+              {isLoading ? "🔄" : ""}
+            </span>
+            {isLoading ? "同步数据中..." : `云端已就绪 (${fetchSource})`}
+          </div>
         </div>
       </div>
     </div>
   );
 
   const renderIndexTab = () => (
-    <div className="w-full max-w-md bg-white/60 backdrop-blur-md rounded-[2rem] p-6 shadow-sm border-2 border-white animate-in slide-in-from-bottom-4 duration-300">
-      <h2 className="text-2xl font-bold text-darkGrey mb-6 text-center">序号查找</h2>
-      <div className="flex gap-2 mb-6">
+    <div className="w-full max-w-md bg-white/60 backdrop-blur-md rounded-[2rem] p-6 shadow-sm border-2 border-white animate-in slide-in-from-bottom-4 duration-300 flex flex-col max-h-[75vh]">
+      <h2 className="text-xl font-black text-darkGrey mb-4 text-center tracking-tight">话题浏览室</h2>
+      
+      <div className="flex gap-2 mb-4">
         <input
           type="number"
           value={searchIndex}
           onChange={(e) => setSearchIndex(e.target.value)}
-          placeholder="话题编号"
-          className="flex-1 px-4 py-3 rounded-xl border-2 border-white bg-white/80 text-darkGrey placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all"
+          placeholder="输入 ID"
+          className="w-24 px-4 py-2.5 rounded-xl border-2 border-white bg-white/80 text-darkGrey font-bold text-sm focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all"
         />
         <button 
           onClick={handleSearch}
-          className="bg-darkGrey text-white px-6 py-3 rounded-xl font-bold active:scale-95 transition-transform"
+          className="flex-1 bg-darkGrey text-white py-2.5 rounded-xl font-bold active:scale-95 transition-transform text-xs shadow-md"
         >
-          🔍
+          🔍 精准定位
         </button>
       </div>
 
-      <div className="min-h-[150px] flex items-center justify-center bg-white/40 rounded-xl p-4 border border-white/50 text-center">
+      <div className="mb-4">
+        <select 
+          value={selectedBrowseCategory}
+          onChange={(e) => {
+            setSelectedBrowseCategory(e.target.value);
+            setSearchResult(null);
+          }}
+          className="w-full px-4 py-2.5 rounded-xl border-2 border-white bg-white/80 text-darkGrey font-bold text-sm focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all appearance-none"
+          style={{ backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%234A4A4A%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.6rem auto' }}
+        >
+          <option value="all">-- 请选择分类浏览 --</option>
+          {allCategories.map(cat => (
+            <option key={cat} value={cat}>{cat} ({topics.filter(t => t.category === cat).length}条)</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="flex-1 overflow-y-auto bg-white/40 rounded-2xl p-4 border border-white/50 shadow-inner">
         {searchResult ? (
-          <div>
-             <span className="inline-block bg-pink-100 text-pink-500 text-[10px] font-black px-2 py-0.5 rounded-full mb-2">
-               {searchResult.category}
-             </span>
-             <p className="text-lg font-bold text-darkGrey leading-relaxed">{searchResult.content}</p>
-             {disabledCategories.includes(searchResult.category || '默认话题') && (
-               <p className="text-[10px] text-orange-500 mt-2 font-bold">⚠️ 该分类目前已在设置中禁用</p>
-             )}
+          <div className="bg-white/80 p-4 rounded-xl shadow-sm border-l-4 border-pink-400 mb-4 animate-in zoom-in-95 duration-200">
+             <div className="flex justify-between items-center mb-2">
+               <span className="text-[10px] font-black bg-pink-100 text-pink-500 px-2 py-0.5 rounded uppercase">{searchResult.category}</span>
+               <span className="text-[10px] text-gray-300 font-bold">ID: {searchResult.id}</span>
+             </div>
+             <p className="text-sm font-bold text-darkGrey">{searchResult.content}</p>
           </div>
-        ) : searchError ? (
-          <p className="text-red-500 font-medium">{searchError}</p>
+        ) : searchError && (
+          <p className="text-red-500 text-xs font-bold text-center py-2">{searchError}</p>
+        )}
+
+        {browseList.length > 0 ? (
+          <div className="space-y-2">
+            {browseList.map(item => (
+              <div 
+                key={item.id} 
+                className={`p-3 rounded-xl border transition-all ${searchResult?.id === item.id ? 'bg-pink-50 border-pink-200 scale-105 shadow-md' : 'bg-white/40 border-white/60 hover:bg-white/60'}`}
+              >
+                <div className="flex gap-3">
+                  <span className="text-[9px] font-black text-pink-300 bg-white px-1.5 py-0.5 rounded shadow-sm h-fit">#{item.id}</span>
+                  <p className="text-xs font-bold text-darkGrey leading-tight">{item.content}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : selectedBrowseCategory !== 'all' ? (
+          <p className="text-center text-gray-300 italic text-xs py-10">该分类下暂无内容</p>
         ) : (
-          <p className="text-darkGrey/40 italic text-sm">输入编号并点击搜索</p>
+          <div className="h-full flex flex-col items-center justify-center text-darkGrey/20 italic space-y-4 py-10">
+            <span className="text-5xl">🔭</span>
+            <p className="text-xs font-bold">选择分类或搜索 ID 开始探索</p>
+          </div>
         )}
       </div>
     </div>
@@ -254,90 +294,69 @@ const App: React.FC = () => {
 
   const renderSettingsTab = () => (
     <div className="w-full max-w-md bg-white/60 backdrop-blur-md rounded-[2rem] p-6 shadow-sm border-2 border-white animate-in slide-in-from-bottom-4 duration-300 overflow-y-auto max-h-[75vh]">
-      <h2 className="text-2xl font-bold text-darkGrey mb-6 text-center">应用配置</h2>
+      <h2 className="text-xl font-black text-darkGrey mb-6 text-center">系统实验室</h2>
       
-      {/* 分类筛选器 - 垂直列表版 */}
       <div className="mb-8">
-        <div className="flex justify-between items-end mb-3 px-1">
-          <label className="block text-darkGrey font-bold text-sm">
-            🎨 话题分类筛选
+        <div className="flex justify-between items-end mb-4 px-1">
+          <label className="text-darkGrey font-black text-xs uppercase tracking-tighter">
+            🎨 分类过滤器
           </label>
-          <div className="flex gap-3">
-             <button 
-               onClick={() => toggleAllCategories(false)}
-               className="text-[10px] text-pink-500 font-bold hover:underline"
-             >
-               全部开启
-             </button>
-             <button 
-               onClick={() => toggleAllCategories(true)}
-               className="text-[10px] text-gray-400 font-bold hover:underline"
-             >
-               全部屏蔽
-             </button>
+          <div className="flex gap-4">
+             <button onClick={() => toggleAllCategories(false)} className="text-[10px] text-pink-500 font-black">全部显示</button>
+             <button onClick={() => toggleAllCategories(true)} className="text-[10px] text-gray-400 font-black">全部隐藏</button>
           </div>
         </div>
-        <div className="flex flex-col gap-2.5 p-1">
-          {allCategories.length > 0 ? (
-            allCategories.map(cat => {
-              const isDisabled = disabledCategories.includes(cat);
-              const count = topics.filter(t => t.category === cat).length;
-              return (
-                <button
-                  key={cat}
-                  onClick={() => toggleCategory(cat)}
-                  className={`
-                    w-full flex items-center justify-between px-5 py-4 rounded-2xl transition-all duration-300 border-2
-                    ${!isDisabled 
-                      ? 'bg-white border-white text-darkGrey shadow-sm translate-x-0' 
-                      : 'bg-gray-100/30 border-transparent text-gray-400 opacity-60 scale-[0.98]'}
-                  `}
-                >
-                  <div className="flex flex-col items-start">
-                    <span className="text-sm font-bold">{cat}</span>
-                    <span className="text-[9px] opacity-60 mt-0.5">{count} 个话题</span>
-                  </div>
-                  <div className={`
-                    w-10 h-6 rounded-full relative transition-colors duration-300 flex items-center px-1
-                    ${!isDisabled ? 'bg-pink-400' : 'bg-gray-300'}
-                  `}>
-                    <div className={`
-                      w-4 h-4 rounded-full bg-white shadow-sm transform transition-transform duration-300
-                      ${!isDisabled ? 'translate-x-4' : 'translate-x-0'}
-                    `}></div>
-                  </div>
-                </button>
-              );
-            })
-          ) : (
-            <div className="bg-white/30 rounded-2xl p-6 text-center border border-white/50">
-               <p className="text-xs text-gray-400 italic">暂无分类数据，请先同步云端</p>
-            </div>
-          )}
+        <div className="flex flex-col gap-2">
+          {allCategories.map(cat => {
+            const isDisabled = disabledCategories.includes(cat);
+            const count = topics.filter(t => t.category === cat).length;
+            return (
+              <button
+                key={cat}
+                onClick={() => toggleCategory(cat)}
+                className={`w-full flex items-center justify-between px-5 py-4 rounded-2xl transition-all border-2 ${!isDisabled ? 'bg-white border-white shadow-sm' : 'bg-gray-100/30 border-transparent opacity-40'}`}
+              >
+                <div className="text-left">
+                  <span className="text-sm font-black text-darkGrey">{cat}</span>
+                  <p className="text-[9px] font-bold text-gray-400">{count} 条话题</p>
+                </div>
+                <div className={`w-10 h-6 rounded-full flex items-center px-1 transition-colors ${!isDisabled ? 'bg-pink-400' : 'bg-gray-300'}`}>
+                  <div className={`w-4 h-4 rounded-full bg-white transition-transform ${!isDisabled ? 'translate-x-4' : 'translate-x-0'}`}></div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      <div className="mb-8 border-t border-white/50 pt-6">
-        <label className="block text-darkGrey font-bold mb-2 ml-1 text-sm">Markdown 数据源 URL</label>
+      <div className="mb-8 border-t border-white/40 pt-6">
+        <label className="block text-darkGrey font-black text-xs uppercase mb-2 ml-1">远程数据源</label>
         <textarea
           value={sourceUrl}
           onChange={(e) => setSourceUrl(e.target.value)}
-          className="w-full h-20 px-4 py-3 rounded-xl border-2 border-white bg-white/80 text-darkGrey text-[11px] focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all resize-none break-all"
+          className="w-full h-20 px-4 py-3 rounded-xl border-2 border-white bg-white/80 text-darkGrey text-[10px] font-bold focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all resize-none break-all"
         />
       </div>
 
       <div className="flex flex-col gap-3">
-        <button onClick={handleUrlSave} disabled={isLoading} className="w-full bg-darkGrey text-white py-4 rounded-2xl font-bold active:scale-95 transition-transform shadow-lg disabled:opacity-50">
-          {isLoading ? '正在获取新数据...' : '同步并保存配置'}
+        <button onClick={handleUrlSave} disabled={isLoading} className="w-full bg-darkGrey text-white py-4 rounded-2xl font-black active:scale-95 transition-transform shadow-lg disabled:opacity-50">
+          {isLoading ? 'SYNCING...' : '同步云端数据'}
         </button>
-        <button onClick={handleClearCache} className="w-full bg-white text-red-500 border-2 border-red-200 py-4 rounded-2xl font-bold active:scale-95 transition-transform hover:bg-red-50">
+        <button onClick={handleClearCache} className="w-full bg-white text-red-500 border-2 border-red-100 py-4 rounded-2xl font-black active:scale-95 transition-transform hover:bg-red-50">
           清除已读历史
         </button>
       </div>
       
-      <p className="text-center text-[9px] text-gray-400 mt-6 font-medium">VERSION 1.2.0 • MADE WITH ❤️</p>
+      <p className="text-center text-[9px] text-gray-300 mt-6 font-black uppercase tracking-widest">Version 1.4.0 • Stable</p>
     </div>
   );
+
+  const toggleAllCategories = (disableAll: boolean) => {
+    const newDisabled = disableAll ? [...allCategories] : [];
+    setDisabledCategories(newDisabled);
+    localStorage.setItem(LOCAL_STORAGE_KEYS.DISABLED_CATEGORIES, JSON.stringify(newDisabled));
+    if (disableAll) setCurrentTopic(null);
+  };
 
   return (
     <div className={`min-h-screen transition-colors duration-1000 ease-in-out ${bgColorClass} flex flex-col font-sans overflow-hidden select-none`}>
@@ -345,7 +364,7 @@ const App: React.FC = () => {
         <h1 className="text-3xl font-black text-white drop-shadow-md tracking-tight">
           情侣深度对话
         </h1>
-        <p className="text-white/60 text-[10px] font-bold uppercase tracking-widest mt-1">Deep Talks</p>
+        <p className="text-white/60 text-[10px] font-bold uppercase tracking-widest mt-1">Connection Engine</p>
       </header>
       <main className={`flex-1 flex flex-col items-center justify-start pt-4 px-4 ${CONTENT_PADDING} overflow-y-auto`}>
         {currentTab === Tab.EXTRACT && renderExtractTab()}

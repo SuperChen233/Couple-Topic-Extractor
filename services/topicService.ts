@@ -2,9 +2,6 @@
 import { Topic } from '../types';
 import { BUILTIN_TOPICS_MD, FETCH_TIMEOUT_MS, LOCAL_STORAGE_KEYS } from '../constants';
 
-/**
- * 带超时功能的 fetch
- */
 const fetchWithTimeout = async (url: string, options = {}, timeout = FETCH_TIMEOUT_MS) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
@@ -12,7 +9,7 @@ const fetchWithTimeout = async (url: string, options = {}, timeout = FETCH_TIMEO
     const response = await fetch(url, { 
       ...options, 
       signal: controller.signal,
-      cache: 'no-cache' // 强制不走浏览器缓存，防止获取到旧的错误页面
+      cache: 'no-cache'
     });
     clearTimeout(id);
     return response;
@@ -22,13 +19,9 @@ const fetchWithTimeout = async (url: string, options = {}, timeout = FETCH_TIMEO
   }
 };
 
-/**
- * 核心：获取并验证话题
- */
 export const fetchTopics = async (url: string): Promise<{ topics: Topic[], isOffline: boolean, source: string }> => {
   const processRawText = (text: string) => {
     const trimmed = text.trim();
-    // 检查是否误拿到了 HTML 页面（比如 Gitee 的登录页或错误页）
     if (trimmed.toLowerCase().startsWith("<!doctype") || trimmed.toLowerCase().startsWith("<html")) {
       throw new Error("检测到无效响应（HTML而非文本）");
     }
@@ -36,12 +29,10 @@ export const fetchTopics = async (url: string): Promise<{ topics: Topic[], isOff
     if (parsed.length === 0) {
       throw new Error("未能从文件中解析出话题列表");
     }
-    // 成功解析，存入缓存
     localStorage.setItem(LOCAL_STORAGE_KEYS.CACHED_TOPICS, JSON.stringify(parsed));
     return parsed;
   };
 
-  // 尝试列表：直接 -> 代理1 -> 代理2 -> 代理3
   const attemptUrls = [
     { name: 'Direct', url: url },
     { name: 'CORSProxy.io', url: `https://corsproxy.io/?${encodeURIComponent(url)}` },
@@ -51,7 +42,6 @@ export const fetchTopics = async (url: string): Promise<{ topics: Topic[], isOff
 
   for (const attempt of attemptUrls) {
     try {
-      console.log(`Trying source: ${attempt.name}`);
       const response = await fetchWithTimeout(attempt.url);
       if (response.ok) {
         const text = await response.text();
@@ -63,7 +53,6 @@ export const fetchTopics = async (url: string): Promise<{ topics: Topic[], isOff
     }
   }
 
-  // 所有网络尝试失败 -> 尝试缓存
   const cached = localStorage.getItem(LOCAL_STORAGE_KEYS.CACHED_TOPICS);
   if (cached) {
     try {
@@ -74,45 +63,38 @@ export const fetchTopics = async (url: string): Promise<{ topics: Topic[], isOff
     } catch { /* ignore */ }
   }
 
-  // 最终兜底 -> 内置
   return { topics: parseMarkdownTopics(BUILTIN_TOPICS_MD), isOffline: true, source: 'Built-in' };
 };
 
 /**
- * 解析 Markdown 内容 (增强正则兼容性)
+ * 强力解析器：确保 ID 严格唯一且按序排列，避免逻辑跳变
  */
 export const parseMarkdownTopics = (text: string): Topic[] => {
   const lines = text.split(/\r?\n/);
   let topics: Topic[] = [];
   let currentCategory = "默认话题";
-  let globalAutoId = 1;
+  let internalIdCounter = 1; // 强制使用内部计数器确保 ID 唯一
 
   lines.forEach(line => {
     const trimmed = line.trim();
     if (!trimmed) return;
 
-    // 匹配标题
+    // 分类标题解析
     const headerMatch = trimmed.match(/^#+\s*(.*)$/);
     if (headerMatch) {
       currentCategory = headerMatch[1].trim();
       return;
     }
 
-    // 匹配有序列表: 1. 或 1、 或 (1)
-    const topicMatch = trimmed.match(/^[\(\（]?(\d+)[\)\）\.\-\s\u3001]+(.*)$/);
-    if (topicMatch) {
-      topics.push({
-        id: parseInt(topicMatch[1], 10),
-        content: topicMatch[2].trim(),
-        category: currentCategory
-      });
-      globalAutoId = Math.max(globalAutoId, parseInt(topicMatch[1], 10) + 1);
-    } else if (trimmed.length > 2 && !trimmed.startsWith('![')) {
-      // 兜底非编号行（如果是纯文本且够长，自动分配编号）
-      if (!trimmed.startsWith('-') && !trimmed.startsWith('*') && !trimmed.startsWith('>') && !trimmed.startsWith('#')) {
+    // 话题内容解析 (匹配 1. 内容 或 - 内容 或 (1) 内容)
+    const topicContentMatch = trimmed.match(/^(?:[\(\（]?\d+[\)\）\.\-\s\u3001]+|[\-\*\+]\s+)?(.*)$/);
+    if (topicContentMatch && topicContentMatch[1].trim().length > 1) {
+      const content = topicContentMatch[1].trim();
+      // 排除掉一些可能的 Markdown 标记
+      if (!content.startsWith('![') && !content.startsWith('[')) {
         topics.push({
-          id: globalAutoId++,
-          content: trimmed,
+          id: internalIdCounter++,
+          content: content,
           category: currentCategory
         });
       }
@@ -122,11 +104,23 @@ export const parseMarkdownTopics = (text: string): Topic[] => {
   return topics;
 };
 
-export const getNextRandomTopic = (allTopics: Topic[], seenIds: number[]): Topic | null => {
-  const availableTopics = allTopics.filter(t => !seenIds.includes(t.id));
+/**
+ * 分类优先随机逻辑
+ */
+export const getNextRandomTopic = (filteredTopics: Topic[], seenIds: number[]): Topic | null => {
+  // 过滤出未读的话题
+  const availableTopics = filteredTopics.filter(t => !seenIds.includes(t.id));
   if (availableTopics.length === 0) return null;
-  const randomIndex = Math.floor(Math.random() * availableTopics.length);
-  return availableTopics[randomIndex];
+
+  // 1. 提取有未读话题的分类
+  const availableCategories = Array.from(new Set(availableTopics.map(t => t.category)));
+  
+  // 2. 随机选分类
+  const randomCategory = availableCategories[Math.floor(Math.random() * availableCategories.length)];
+  
+  // 3. 从该分类中随机选一个话题
+  const targetCategoryTopics = availableTopics.filter(t => t.category === randomCategory);
+  return targetCategoryTopics[Math.floor(Math.random() * targetCategoryTopics.length)];
 };
 
 export const getTopicById = (allTopics: Topic[], id: number): Topic | undefined => {
