@@ -1,138 +1,134 @@
+
 import { Topic } from '../types';
+import { BUILTIN_TOPICS_MD, FETCH_TIMEOUT_MS, LOCAL_STORAGE_KEYS } from '../constants';
 
 /**
- * 获取话题列表
- * 采用多重回退策略 (Fallback Strategy) 来解决跨域 (CORS) 和网络限制问题。
- * @param url 话题源的 URL
- * @returns 解析后的 Topic 数组
+ * 带超时功能的 fetch
  */
-export const fetchTopics = async (url: string): Promise<Topic[]> => {
-  // 辅助函数：处理 Fetch 响应
-  const processResponse = async (response: Response) => {
-    if (!response.ok) throw new Error(`Status: ${response.status}`);
-    const text = await response.text();
-    // 基础检查：防止错误地解析 HTML 错误页面（例如 404 页面）
-    if (text.trim().toLowerCase().startsWith("<!doctype") || text.trim().toLowerCase().startsWith("<html")) {
-      throw new Error("Received HTML content instead of raw text");
-    }
-    return parseTopics(text);
-  };
-
-  // 1. 尝试：直接请求 (Direct Fetch)
-  // 适用于同源 URL 或支持 CORS 的服务器
+const fetchWithTimeout = async (url: string, options = {}, timeout = FETCH_TIMEOUT_MS) => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(url);
-    return await processResponse(response);
-  } catch (error) {
-    console.warn("Direct fetch failed, trying Proxy 1 (AllOrigins)...", error);
+    const response = await fetch(url, { 
+      ...options, 
+      signal: controller.signal,
+      cache: 'no-cache' // 强制不走浏览器缓存，防止获取到旧的错误页面
+    });
+    clearTimeout(id);
+    return response;
+  } catch (e) {
+    clearTimeout(id);
+    throw e;
   }
-
-  // 2. 尝试：AllOrigins 代理
-  // 一个免费的 CORS 代理服务
-  try {
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    const response = await fetch(proxyUrl);
-    return await processResponse(response);
-  } catch (error) {
-    console.warn("AllOrigins failed, trying Proxy 2 (CorsProxy)...", error);
-  }
-
-  // 3. 尝试：CorsProxy.io 代理
-  // 备用代理服务
-  try {
-    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-    const response = await fetch(proxyUrl);
-    return await processResponse(response);
-  } catch (error) {
-    console.warn("CorsProxy failed, trying Proxy 3 (CodeTabs)...", error);
-  }
-
-  // 4. 尝试：CodeTabs 代理
-  // 最后的备用代理
-  try {
-    const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`;
-    const response = await fetch(proxyUrl);
-    return await processResponse(response);
-  } catch (error) {
-    console.error("All proxies failed.", error);
-  }
-
-  throw new Error("无法加载话题。URL 可能受限或无效 (CORS/网络错误)。");
 };
 
 /**
- * 解析文本内容为话题对象列表
- * @param text 原始文本内容
+ * 核心：获取并验证话题
  */
-const parseTopics = (text: string): Topic[] => {
-  const lines = text.split('\n');
-  let topics: Topic[] = [];
+export const fetchTopics = async (url: string): Promise<{ topics: Topic[], isOffline: boolean, source: string }> => {
+  const processRawText = (text: string) => {
+    const trimmed = text.trim();
+    // 检查是否误拿到了 HTML 页面（比如 Gitee 的登录页或错误页）
+    if (trimmed.toLowerCase().startsWith("<!doctype") || trimmed.toLowerCase().startsWith("<html")) {
+      throw new Error("检测到无效响应（HTML而非文本）");
+    }
+    const parsed = parseMarkdownTopics(text);
+    if (parsed.length === 0) {
+      throw new Error("未能从文件中解析出话题列表");
+    }
+    // 成功解析，存入缓存
+    localStorage.setItem(LOCAL_STORAGE_KEYS.CACHED_TOPICS, JSON.stringify(parsed));
+    return parsed;
+  };
 
-  // 策略 1: 结构化解析
-  // 尝试解析以数字开头，后面跟着分隔符的行。
-  // 支持的分隔符: . (点), - (横杠), 空格, 或 、 (中文顿号)
+  // 尝试列表：直接 -> 代理1 -> 代理2 -> 代理3
+  const attemptUrls = [
+    { name: 'Direct', url: url },
+    { name: 'CORSProxy.io', url: `https://corsproxy.io/?${encodeURIComponent(url)}` },
+    { name: 'CodeTabs', url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` },
+    { name: 'AllOrigins', url: `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` }
+  ];
+
+  for (const attempt of attemptUrls) {
+    try {
+      console.log(`Trying source: ${attempt.name}`);
+      const response = await fetchWithTimeout(attempt.url);
+      if (response.ok) {
+        const text = await response.text();
+        const topics = processRawText(text);
+        return { topics, isOffline: false, source: attempt.name };
+      }
+    } catch (e) {
+      console.warn(`Source ${attempt.name} failed:`, e);
+    }
+  }
+
+  // 所有网络尝试失败 -> 尝试缓存
+  const cached = localStorage.getItem(LOCAL_STORAGE_KEYS.CACHED_TOPICS);
+  if (cached) {
+    try {
+      const parsedCache = JSON.parse(cached);
+      if (Array.isArray(parsedCache) && parsedCache.length > 0) {
+        return { topics: parsedCache, isOffline: true, source: 'LocalStorage' };
+      }
+    } catch { /* ignore */ }
+  }
+
+  // 最终兜底 -> 内置
+  return { topics: parseMarkdownTopics(BUILTIN_TOPICS_MD), isOffline: true, source: 'Built-in' };
+};
+
+/**
+ * 解析 Markdown 内容 (增强正则兼容性)
+ */
+export const parseMarkdownTopics = (text: string): Topic[] => {
+  const lines = text.split(/\r?\n/);
+  let topics: Topic[] = [];
+  let currentCategory = "默认话题";
+  let globalAutoId = 1;
+
   lines.forEach(line => {
     const trimmed = line.trim();
     if (!trimmed) return;
 
-    // 正则表达式解释:
-    // ^(\d+)          -> 匹配行首的一个或多个数字 (捕获组 1: ID)
-    // [\.\-\s\u3001]+ -> 匹配随后的点、横杠、空格或中文顿号
-    // (.*)$           -> 匹配行的剩余部分 (捕获组 2: 内容)
-    const match = trimmed.match(/^(\d+)[\.\-\s\u3001]+(.*)$/);
-    
-    if (match) {
-      topics.push({
-        id: parseInt(match[1], 10),
-        content: match[2].trim(),
-      });
+    // 匹配标题
+    const headerMatch = trimmed.match(/^#+\s*(.*)$/);
+    if (headerMatch) {
+      currentCategory = headerMatch[1].trim();
+      return;
     }
-  });
 
-  // 策略 2: 兜底方案 (无编号列表)
-  // 如果结构化解析没有找到任何话题（或者文件格式不规范），
-  // 假设文件只是纯文本问题列表。
-  // 我们将每一行非空文本视为一个话题，并自动分配序号。
-  if (topics.length === 0) {
-    console.warn("结构化解析未找到话题，切换到兜底模式 (纯文本列表)。");
-    lines.forEach((line, index) => {
-      const trimmed = line.trim();
-      if (trimmed) {
+    // 匹配有序列表: 1. 或 1、 或 (1)
+    const topicMatch = trimmed.match(/^[\(\（]?(\d+)[\)\）\.\-\s\u3001]+(.*)$/);
+    if (topicMatch) {
+      topics.push({
+        id: parseInt(topicMatch[1], 10),
+        content: topicMatch[2].trim(),
+        category: currentCategory
+      });
+      globalAutoId = Math.max(globalAutoId, parseInt(topicMatch[1], 10) + 1);
+    } else if (trimmed.length > 2 && !trimmed.startsWith('![')) {
+      // 兜底非编号行（如果是纯文本且够长，自动分配编号）
+      if (!trimmed.startsWith('-') && !trimmed.startsWith('*') && !trimmed.startsWith('>') && !trimmed.startsWith('#')) {
         topics.push({
-          id: index + 1, // 根据行号生成 ID
-          content: trimmed
+          id: globalAutoId++,
+          content: trimmed,
+          category: currentCategory
         });
       }
-    });
-  }
+    }
+  });
 
   return topics;
 };
 
-/**
- * 获取下一个随机话题
- * @param allTopics 所有话题列表
- * @param seenIds 已看过的话题 ID 列表
- */
-export const getNextRandomTopic = (
-  allTopics: Topic[],
-  seenIds: number[]
-): Topic | null => {
-  // 过滤出未看过的话题
+export const getNextRandomTopic = (allTopics: Topic[], seenIds: number[]): Topic | null => {
   const availableTopics = allTopics.filter(t => !seenIds.includes(t.id));
-  
-  if (availableTopics.length === 0) {
-    return null;
-  }
-
-  // 随机选择一个索引
+  if (availableTopics.length === 0) return null;
   const randomIndex = Math.floor(Math.random() * availableTopics.length);
   return availableTopics[randomIndex];
 };
 
-/**
- * 根据 ID 获取特定话题
- */
 export const getTopicById = (allTopics: Topic[], id: number): Topic | undefined => {
   return allTopics.find(t => t.id === id);
 };

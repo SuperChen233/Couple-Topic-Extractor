@@ -1,7 +1,9 @@
+
 // 话题对象定义
 export interface Topic {
   id: number;       // 话题序号
   content: string;  // 话题内容
+  category: string; // 话题分类 (从 Markdown 标题解析)
 }
 
 // 标签页枚举
@@ -11,7 +13,7 @@ export enum Tab {
   SETTINGS = 'SETTINGS', // 设置页
 }
 
-// 应用整体状态接口 (参考用，实际状态在 App.tsx 中通过 hooks 管理)
+// 应用整体状态接口
 export interface AppState {
   topics: Topic[];              // 所有话题
   seenTopicIds: number[];       // 已看过的 ID
