@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Tab, Topic } from './types';
 import { DEFAULT_SOURCE_URL, LOCAL_STORAGE_KEYS } from './constants';
 import { fetchTopics, getNextRandomTopic, getTopicById } from './services/topicService';
@@ -16,6 +16,7 @@ const App: React.FC = () => {
   const [seenTopicIds, setSeenTopicIds] = useState<number[]>([]);
   const [clickCount, setClickCount] = useState<number>(0);
   const [sourceUrl, setSourceUrl] = useState<string>(DEFAULT_SOURCE_URL);
+  const [disabledCategories, setDisabledCategories] = useState<string[]>([]);
   
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +28,16 @@ const App: React.FC = () => {
   const [searchIndex, setSearchIndex] = useState<string>('');
   const [searchResult, setSearchResult] = useState<Topic | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
+
+  // 计算所有唯一的分类
+  const allCategories = useMemo(() => {
+    return Array.from(new Set(topics.map(t => t.category || '默认话题')));
+  }, [topics]);
+
+  // 根据禁用的分类过滤出当前可用的所有话题
+  const filteredTopics = useMemo(() => {
+    return topics.filter(t => !disabledCategories.includes(t.category || '默认话题'));
+  }, [topics, disabledCategories]);
 
   const loadTopics = async (url: string) => {
     setIsLoading(true);
@@ -48,6 +59,7 @@ const App: React.FC = () => {
     const savedUrl = localStorage.getItem(LOCAL_STORAGE_KEYS.SOURCE_URL);
     const savedSeen = localStorage.getItem(LOCAL_STORAGE_KEYS.SEEN_TOPICS);
     const savedClicks = localStorage.getItem(LOCAL_STORAGE_KEYS.CLICK_COUNT);
+    const savedDisabled = localStorage.getItem(LOCAL_STORAGE_KEYS.DISABLED_CATEGORIES);
 
     if (savedUrl) setSourceUrl(savedUrl);
     if (savedSeen) {
@@ -58,23 +70,35 @@ const App: React.FC = () => {
       }
     }
     if (savedClicks) setClickCount(parseInt(savedClicks, 10));
+    if (savedDisabled) {
+      try {
+        setDisabledCategories(JSON.parse(savedDisabled));
+      } catch (e) {
+        setDisabledCategories([]);
+      }
+    }
 
     loadTopics(savedUrl || DEFAULT_SOURCE_URL);
   }, []);
 
   const handleExtractClick = useCallback(() => {
-    if (topics.length === 0) {
-      if (!isLoading) loadTopics(sourceUrl);
+    if (filteredTopics.length === 0) {
+      if (topics.length > 0) {
+        setError("当前分类已全部屏蔽");
+      } else if (!isLoading) {
+        loadTopics(sourceUrl);
+      }
       return;
     }
 
+    setError(null);
     taskManager.check_special_task();
 
     const newCount = clickCount + 1;
     setClickCount(newCount);
     localStorage.setItem(LOCAL_STORAGE_KEYS.CLICK_COUNT, newCount.toString());
 
-    const nextTopic = getNextRandomTopic(topics, seenTopicIds);
+    const nextTopic = getNextRandomTopic(filteredTopics, seenTopicIds);
 
     if (nextTopic) {
       setCurrentTopic(nextTopic);
@@ -86,7 +110,7 @@ const App: React.FC = () => {
       setIsAllSeen(true);
       setCurrentTopic(null);
     }
-  }, [clickCount, topics, seenTopicIds, isLoading, sourceUrl]);
+  }, [clickCount, filteredTopics, topics.length, seenTopicIds, isLoading, sourceUrl]);
 
   const handleSearch = () => {
     const id = parseInt(searchIndex, 10);
@@ -115,6 +139,19 @@ const App: React.FC = () => {
     setCurrentTab(Tab.EXTRACT);
   };
 
+  const toggleCategory = (category: string) => {
+    const newDisabled = disabledCategories.includes(category)
+      ? disabledCategories.filter(c => c !== category)
+      : [...disabledCategories, category];
+    
+    setDisabledCategories(newDisabled);
+    localStorage.setItem(LOCAL_STORAGE_KEYS.DISABLED_CATEGORIES, JSON.stringify(newDisabled));
+    // 切换分类筛选后，重置当前展示话题状态，避免显示了已禁用的分类
+    if (currentTopic && newDisabled.includes(currentTopic.category || '默认话题')) {
+      setCurrentTopic(null);
+    }
+  };
+
   const handleClearCache = () => {
     if (window.confirm("确定要清除历史进度吗？")) {
       setSeenTopicIds([]);
@@ -140,10 +177,10 @@ const App: React.FC = () => {
       
       <div className="flex flex-col items-center gap-3">
         <div className="text-white font-bold text-xs bg-black/10 px-4 py-1.5 rounded-full backdrop-blur-sm shadow-inner">
-          已探索: {seenTopicIds.length} / {topics.length}
+          已探索: {seenTopicIds.filter(id => topics.some(t => t.id === id)).length} / {topics.length}
+          {filteredTopics.length < topics.length && <span className="ml-1 opacity-70">(当前可用: {filteredTopics.length})</span>}
         </div>
         
-        {/* 网络状态反馈 */}
         <div className="flex items-center gap-2">
           {isOfflineMode ? (
             <div className="group relative">
@@ -155,7 +192,7 @@ const App: React.FC = () => {
                  <span>⚠️ 离线模式</span>
                  <span className={isLoading ? 'animate-spin' : ''}>🔄</span>
                </button>
-               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-darkGrey text-white text-[9px] px-2 py-1 rounded whitespace-nowrap">
+               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-darkGrey text-white text-[9px] px-2 py-1 rounded whitespace-nowrap z-10">
                  数据源: {fetchSource}
                </div>
             </div>
@@ -196,6 +233,9 @@ const App: React.FC = () => {
                {searchResult.category}
              </span>
              <p className="text-lg font-bold text-darkGrey leading-relaxed">{searchResult.content}</p>
+             {disabledCategories.includes(searchResult.category || '默认话题') && (
+               <p className="text-[10px] text-orange-500 mt-2 font-bold">⚠️ 该分类目前已在设置中禁用</p>
+             )}
           </div>
         ) : searchError ? (
           <p className="text-red-500 font-medium">{searchError}</p>
@@ -207,22 +247,55 @@ const App: React.FC = () => {
   );
 
   const renderSettingsTab = () => (
-    <div className="w-full max-w-md bg-white/60 backdrop-blur-md rounded-[2rem] p-6 shadow-sm border-2 border-white animate-in slide-in-from-bottom-4 duration-300">
+    <div className="w-full max-w-md bg-white/60 backdrop-blur-md rounded-[2rem] p-6 shadow-sm border-2 border-white animate-in slide-in-from-bottom-4 duration-300 overflow-y-auto max-h-[70vh]">
       <h2 className="text-2xl font-bold text-darkGrey mb-6 text-center">应用配置</h2>
+      
+      {/* 分类筛选器 */}
+      <div className="mb-6">
+        <label className="block text-darkGrey font-bold mb-3 ml-1 text-sm flex items-center gap-2">
+          <span>🎨 话题分类显示筛选</span>
+          <span className="text-[10px] font-normal text-gray-400 opacity-80">(点击切换显示/隐藏)</span>
+        </label>
+        <div className="flex flex-wrap gap-2 p-3 bg-white/30 rounded-2xl border border-white/50">
+          {allCategories.length > 0 ? (
+            allCategories.map(cat => {
+              const isDisabled = disabledCategories.includes(cat);
+              return (
+                <button
+                  key={cat}
+                  onClick={() => toggleCategory(cat)}
+                  className={`
+                    px-3 py-2 rounded-xl text-[10px] font-bold transition-all duration-200 border-2
+                    ${!isDisabled 
+                      ? 'bg-white border-pink-300 text-pink-500 shadow-sm' 
+                      : 'bg-gray-100/50 border-gray-200 text-gray-400 opacity-60'}
+                  `}
+                >
+                  {cat} {!isDisabled ? '●' : '○'}
+                </button>
+              );
+            })
+          ) : (
+            <p className="text-[10px] text-gray-400 italic p-2">加载话题后即可进行分类筛选</p>
+          )}
+        </div>
+      </div>
+
       <div className="mb-6">
         <label className="block text-darkGrey font-bold mb-2 ml-1 text-sm">Markdown 数据源 URL</label>
         <textarea
           value={sourceUrl}
           onChange={(e) => setSourceUrl(e.target.value)}
-          className="w-full h-24 px-4 py-3 rounded-xl border-2 border-white bg-white/80 text-darkGrey text-[11px] focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all resize-none break-all"
+          className="w-full h-20 px-4 py-3 rounded-xl border-2 border-white bg-white/80 text-darkGrey text-[11px] focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all resize-none break-all"
         />
       </div>
+
       <div className="flex flex-col gap-3">
         <button onClick={handleUrlSave} disabled={isLoading} className="w-full bg-darkGrey text-white py-3 rounded-xl font-bold active:scale-95 transition-transform shadow-lg disabled:opacity-50">
-          {isLoading ? '加载中...' : '应用并同步'}
+          {isLoading ? '同步中...' : '同步并应用 URL'}
         </button>
         <button onClick={handleClearCache} className="w-full bg-white text-red-500 border-2 border-red-200 py-3 rounded-xl font-bold active:scale-95 transition-transform hover:bg-red-50">
-          重置学习进度
+          重置进度 (保留设置)
         </button>
       </div>
     </div>

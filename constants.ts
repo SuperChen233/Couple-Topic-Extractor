@@ -8,6 +8,7 @@ export const LOCAL_STORAGE_KEYS = {
   SOURCE_URL: 'couple_topic_source_url', // 用户自定义的源链接
   CLICK_COUNT: 'couple_topic_click_count', // 累计点击次数
   CACHED_TOPICS: 'couple_topic_cached_data', // 缓存的完整话题列表
+  DISABLED_CATEGORIES: 'couple_topic_disabled_categories', // 被禁用的分类列表
 };
 
 // 预置的离线/兜底话题 (Markdown 格式)
