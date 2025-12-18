@@ -146,10 +146,16 @@ const App: React.FC = () => {
     
     setDisabledCategories(newDisabled);
     localStorage.setItem(LOCAL_STORAGE_KEYS.DISABLED_CATEGORIES, JSON.stringify(newDisabled));
-    // 切换分类筛选后，重置当前展示话题状态，避免显示了已禁用的分类
     if (currentTopic && newDisabled.includes(currentTopic.category || '默认话题')) {
       setCurrentTopic(null);
     }
+  };
+
+  const toggleAllCategories = (disableAll: boolean) => {
+    const newDisabled = disableAll ? [...allCategories] : [];
+    setDisabledCategories(newDisabled);
+    localStorage.setItem(LOCAL_STORAGE_KEYS.DISABLED_CATEGORIES, JSON.stringify(newDisabled));
+    if (disableAll) setCurrentTopic(null);
   };
 
   const handleClearCache = () => {
@@ -178,7 +184,7 @@ const App: React.FC = () => {
       <div className="flex flex-col items-center gap-3">
         <div className="text-white font-bold text-xs bg-black/10 px-4 py-1.5 rounded-full backdrop-blur-sm shadow-inner">
           已探索: {seenTopicIds.filter(id => topics.some(t => t.id === id)).length} / {topics.length}
-          {filteredTopics.length < topics.length && <span className="ml-1 opacity-70">(当前可用: {filteredTopics.length})</span>}
+          {filteredTopics.length < topics.length && <span className="ml-1 opacity-70">(可用: {filteredTopics.length})</span>}
         </div>
         
         <div className="flex items-center gap-2">
@@ -199,7 +205,7 @@ const App: React.FC = () => {
           ) : (
             <div className="text-[10px] text-white/50 font-bold flex items-center gap-1">
               <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></span>
-              云端同步中 ({fetchSource})
+              云端已同步 ({fetchSource})
             </div>
           )}
         </div>
@@ -247,41 +253,71 @@ const App: React.FC = () => {
   );
 
   const renderSettingsTab = () => (
-    <div className="w-full max-w-md bg-white/60 backdrop-blur-md rounded-[2rem] p-6 shadow-sm border-2 border-white animate-in slide-in-from-bottom-4 duration-300 overflow-y-auto max-h-[70vh]">
+    <div className="w-full max-w-md bg-white/60 backdrop-blur-md rounded-[2rem] p-6 shadow-sm border-2 border-white animate-in slide-in-from-bottom-4 duration-300 overflow-y-auto max-h-[75vh]">
       <h2 className="text-2xl font-bold text-darkGrey mb-6 text-center">应用配置</h2>
       
-      {/* 分类筛选器 */}
-      <div className="mb-6">
-        <label className="block text-darkGrey font-bold mb-3 ml-1 text-sm flex items-center gap-2">
-          <span>🎨 话题分类显示筛选</span>
-          <span className="text-[10px] font-normal text-gray-400 opacity-80">(点击切换显示/隐藏)</span>
-        </label>
-        <div className="flex flex-wrap gap-2 p-3 bg-white/30 rounded-2xl border border-white/50">
+      {/* 分类筛选器 - 垂直列表版 */}
+      <div className="mb-8">
+        <div className="flex justify-between items-end mb-3 px-1">
+          <label className="block text-darkGrey font-bold text-sm">
+            🎨 话题分类筛选
+          </label>
+          <div className="flex gap-3">
+             <button 
+               onClick={() => toggleAllCategories(false)}
+               className="text-[10px] text-pink-500 font-bold hover:underline"
+             >
+               全部开启
+             </button>
+             <button 
+               onClick={() => toggleAllCategories(true)}
+               className="text-[10px] text-gray-400 font-bold hover:underline"
+             >
+               全部屏蔽
+             </button>
+          </div>
+        </div>
+        <div className="flex flex-col gap-2.5 p-1">
           {allCategories.length > 0 ? (
             allCategories.map(cat => {
               const isDisabled = disabledCategories.includes(cat);
+              const count = topics.filter(t => t.category === cat).length;
               return (
                 <button
                   key={cat}
                   onClick={() => toggleCategory(cat)}
                   className={`
-                    px-3 py-2 rounded-xl text-[10px] font-bold transition-all duration-200 border-2
+                    w-full flex items-center justify-between px-5 py-4 rounded-2xl transition-all duration-300 border-2
                     ${!isDisabled 
-                      ? 'bg-white border-pink-300 text-pink-500 shadow-sm' 
-                      : 'bg-gray-100/50 border-gray-200 text-gray-400 opacity-60'}
+                      ? 'bg-white border-white text-darkGrey shadow-sm translate-x-0' 
+                      : 'bg-gray-100/30 border-transparent text-gray-400 opacity-60 scale-[0.98]'}
                   `}
                 >
-                  {cat} {!isDisabled ? '●' : '○'}
+                  <div className="flex flex-col items-start">
+                    <span className="text-sm font-bold">{cat}</span>
+                    <span className="text-[9px] opacity-60 mt-0.5">{count} 个话题</span>
+                  </div>
+                  <div className={`
+                    w-10 h-6 rounded-full relative transition-colors duration-300 flex items-center px-1
+                    ${!isDisabled ? 'bg-pink-400' : 'bg-gray-300'}
+                  `}>
+                    <div className={`
+                      w-4 h-4 rounded-full bg-white shadow-sm transform transition-transform duration-300
+                      ${!isDisabled ? 'translate-x-4' : 'translate-x-0'}
+                    `}></div>
+                  </div>
                 </button>
               );
             })
           ) : (
-            <p className="text-[10px] text-gray-400 italic p-2">加载话题后即可进行分类筛选</p>
+            <div className="bg-white/30 rounded-2xl p-6 text-center border border-white/50">
+               <p className="text-xs text-gray-400 italic">暂无分类数据，请先同步云端</p>
+            </div>
           )}
         </div>
       </div>
 
-      <div className="mb-6">
+      <div className="mb-8 border-t border-white/50 pt-6">
         <label className="block text-darkGrey font-bold mb-2 ml-1 text-sm">Markdown 数据源 URL</label>
         <textarea
           value={sourceUrl}
@@ -291,13 +327,15 @@ const App: React.FC = () => {
       </div>
 
       <div className="flex flex-col gap-3">
-        <button onClick={handleUrlSave} disabled={isLoading} className="w-full bg-darkGrey text-white py-3 rounded-xl font-bold active:scale-95 transition-transform shadow-lg disabled:opacity-50">
-          {isLoading ? '同步中...' : '同步并应用 URL'}
+        <button onClick={handleUrlSave} disabled={isLoading} className="w-full bg-darkGrey text-white py-4 rounded-2xl font-bold active:scale-95 transition-transform shadow-lg disabled:opacity-50">
+          {isLoading ? '正在获取新数据...' : '同步并保存配置'}
         </button>
-        <button onClick={handleClearCache} className="w-full bg-white text-red-500 border-2 border-red-200 py-3 rounded-xl font-bold active:scale-95 transition-transform hover:bg-red-50">
-          重置进度 (保留设置)
+        <button onClick={handleClearCache} className="w-full bg-white text-red-500 border-2 border-red-200 py-4 rounded-2xl font-bold active:scale-95 transition-transform hover:bg-red-50">
+          清除已读历史
         </button>
       </div>
+      
+      <p className="text-center text-[9px] text-gray-400 mt-6 font-medium">VERSION 1.2.0 • MADE WITH ❤️</p>
     </div>
   );
 
