@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Tab, Topic } from './types';
 import { DEFAULT_SOURCE_URL, LOCAL_STORAGE_KEYS } from './constants';
 import { fetchTopics, getNextRandomTopic, getTopicById } from './services/topicService';
@@ -24,11 +24,15 @@ const App: React.FC = () => {
   const [fetchSource, setFetchSource] = useState<string>('');
   const [currentTopic, setCurrentTopic] = useState<Topic | null>(null);
 
-  // 检索页状态
+  // 检索页状态扩展
+  const [indexMode, setIndexMode] = useState<'browse' | 'history'>('browse');
   const [searchIndex, setSearchIndex] = useState<string>('');
   const [searchResult, setSearchResult] = useState<Topic | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [selectedBrowseCategory, setSelectedBrowseCategory] = useState<string>('all');
+
+  // 文件输入引用
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 所有分类
   const allCategories = useMemo(() => {
@@ -40,7 +44,12 @@ const App: React.FC = () => {
     return topics.filter(t => !disabledCategories.includes(t.category || '默认话题'));
   }, [topics, disabledCategories]);
 
-  // 全量库已读数 (去重并校验存在性)
+  // 已读话题列表对象
+  const seenTopicsList = useMemo(() => {
+    return [...seenTopicIds].reverse().map(id => topics.find(t => t.id === id)).filter(Boolean) as Topic[];
+  }, [seenTopicIds, topics]);
+
+  // 全量库已读数
   const globalSeenCount = useMemo(() => {
     const currentIds = new Set(topics.map(t => t.id));
     return seenTopicIds.filter(id => currentIds.has(id)).length;
@@ -59,7 +68,6 @@ const App: React.FC = () => {
       setTopics(data);
       setIsOfflineMode(isOffline);
       setFetchSource(source);
-      // 加载新源后，清理不存在的已读 ID
       const validIds = new Set(data.map(t => t.id));
       setSeenTopicIds(prev => prev.filter(id => validIds.has(id)));
     } catch (err) {
@@ -105,8 +113,6 @@ const App: React.FC = () => {
 
     if (nextTopic) {
       setCurrentTopic(nextTopic);
-      
-      // 使用函数式更新确保计数准确
       setSeenTopicIds(prev => {
         const newSet = new Set([...prev, nextTopic.id]);
         const newArr = Array.from(newSet);
@@ -138,6 +144,79 @@ const App: React.FC = () => {
     }
   };
 
+  const handleDownloadHistory = () => {
+    if (seenTopicsList.length === 0) {
+      alert("还没有产生足迹，去抽取几个话题吧！");
+      return;
+    }
+    
+    const dateStr = new Date().toLocaleDateString();
+    let content = `--- 情侣深度对话足迹导出 (${dateStr}) ---\n\n`;
+    seenTopicsList.forEach((t, index) => {
+      content += `[${index + 1}] 分类: ${t.category} | 编号: #${t.id}\n内容: ${t.content}\n\n`;
+    });
+    content += `--- 共计 ${seenTopicsList.length} 条对话轨迹 ---`;
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `DeepTalk_History_${new Date().toISOString().slice(0, 10)}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportHistory = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      if (!text) return;
+
+      // 利用正则表达式匹配 "编号: #123" 格式
+      const idMatches = text.match(/编号:\s*#(\d+)/g);
+      if (!idMatches) {
+        alert("未能识别有效的足迹格式，请确保使用的是导出的文本文件。");
+        return;
+      }
+
+      const importedIds = idMatches.map(m => parseInt(m.match(/\d+/)![0], 10));
+      
+      // 过滤出当前库中存在的有效 ID
+      const validPool = new Set(topics.map(t => t.id));
+      const filteredImported = importedIds.filter(id => validPool.has(id));
+
+      if (filteredImported.length === 0) {
+        alert("导入的 ID 在当前话题库中均不存在。");
+        return;
+      }
+
+      setSeenTopicIds(prev => {
+        const currentSet = new Set(prev);
+        let addedCount = 0;
+        filteredImported.forEach(id => {
+          if (!currentSet.has(id)) {
+            currentSet.add(id);
+            addedCount++;
+          }
+        });
+
+        const newArr = Array.from(currentSet);
+        localStorage.setItem(LOCAL_STORAGE_KEYS.SEEN_TOPICS, JSON.stringify(newArr));
+        alert(`导入成功！共发现 ${filteredImported.length} 条记录，新增了 ${addedCount} 条足迹。`);
+        return newArr;
+      });
+      
+      // 重置 input 以便下次选择同一文件也能触发
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+    reader.readAsText(file);
+  };
+
   const browseList = useMemo(() => {
     if (selectedBrowseCategory === 'all') return [];
     return topics.filter(t => t.category === selectedBrowseCategory);
@@ -166,7 +245,7 @@ const App: React.FC = () => {
   };
 
   const handleClearCache = () => {
-    if (window.confirm("确定要清除历史进度吗？")) {
+    if (window.confirm("确定要清除历史进度吗？这将同时清空你的足迹。")) {
       setSeenTopicIds([]);
       setClickCount(0);
       localStorage.removeItem(LOCAL_STORAGE_KEYS.SEEN_TOPICS);
@@ -218,77 +297,132 @@ const App: React.FC = () => {
 
   const renderIndexTab = () => (
     <div className="w-full max-w-md bg-white/60 backdrop-blur-md rounded-[2rem] p-6 shadow-sm border-2 border-white animate-in slide-in-from-bottom-4 duration-300 flex flex-col max-h-[75vh]">
-      <h2 className="text-xl font-black text-darkGrey mb-4 text-center tracking-tight">话题浏览室</h2>
-      
-      <div className="flex gap-2 mb-4">
-        <input
-          type="number"
-          value={searchIndex}
-          onChange={(e) => setSearchIndex(e.target.value)}
-          placeholder="输入 ID"
-          className="w-24 px-4 py-2.5 rounded-xl border-2 border-white bg-white/80 text-darkGrey font-bold text-sm focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all"
-        />
+      {/* 模式切换器 */}
+      <div className="flex bg-white/40 p-1 rounded-2xl mb-6 self-center border border-white/50">
         <button 
-          onClick={handleSearch}
-          className="flex-1 bg-darkGrey text-white py-2.5 rounded-xl font-bold active:scale-95 transition-transform text-xs shadow-md"
+          onClick={() => setIndexMode('browse')}
+          className={`px-6 py-2 rounded-xl text-xs font-black transition-all ${indexMode === 'browse' ? 'bg-white shadow-sm text-darkGrey' : 'text-darkGrey/40'}`}
         >
-          🔍 精准定位
+          话题库
+        </button>
+        <button 
+          onClick={() => setIndexMode('history')}
+          className={`px-6 py-2 rounded-xl text-xs font-black transition-all ${indexMode === 'history' ? 'bg-white shadow-sm text-darkGrey' : 'text-darkGrey/40'}`}
+        >
+          我的足迹 ({seenTopicsList.length})
         </button>
       </div>
 
-      <div className="mb-4">
-        <select 
-          value={selectedBrowseCategory}
-          onChange={(e) => {
-            setSelectedBrowseCategory(e.target.value);
-            setSearchResult(null);
-          }}
-          className="w-full px-4 py-2.5 rounded-xl border-2 border-white bg-white/80 text-darkGrey font-bold text-sm focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all appearance-none"
-          style={{ backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%234A4A4A%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.6rem auto' }}
-        >
-          <option value="all">-- 请选择分类浏览 --</option>
-          {allCategories.map(cat => (
-            <option key={cat} value={cat}>{cat} ({topics.filter(t => t.category === cat).length}条)</option>
-          ))}
-        </select>
-      </div>
-
-      <div className="flex-1 overflow-y-auto bg-white/40 rounded-2xl p-4 border border-white/50 shadow-inner">
-        {searchResult ? (
-          <div className="bg-white/80 p-4 rounded-xl shadow-sm border-l-4 border-pink-400 mb-4 animate-in zoom-in-95 duration-200">
-             <div className="flex justify-between items-center mb-2">
-               <span className="text-[10px] font-black bg-pink-100 text-pink-500 px-2 py-0.5 rounded uppercase">{searchResult.category}</span>
-               <span className="text-[10px] text-gray-300 font-bold">ID: {searchResult.id}</span>
-             </div>
-             <p className="text-sm font-bold text-darkGrey">{searchResult.content}</p>
+      {indexMode === 'browse' ? (
+        <>
+          <div className="flex gap-2 mb-4">
+            <input
+              type="number"
+              value={searchIndex}
+              onChange={(e) => setSearchIndex(e.target.value)}
+              placeholder="输入 ID"
+              className="w-24 px-4 py-2.5 rounded-xl border-2 border-white bg-white/80 text-darkGrey font-bold text-sm focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all"
+            />
+            <button 
+              onClick={handleSearch}
+              className="flex-1 bg-darkGrey text-white py-2.5 rounded-xl font-bold active:scale-95 transition-transform text-xs shadow-md"
+            >
+              🔍 精准定位
+            </button>
           </div>
-        ) : searchError && (
-          <p className="text-red-500 text-xs font-bold text-center py-2">{searchError}</p>
-        )}
 
-        {browseList.length > 0 ? (
-          <div className="space-y-2">
-            {browseList.map(item => (
-              <div 
-                key={item.id} 
-                className={`p-3 rounded-xl border transition-all ${searchResult?.id === item.id ? 'bg-pink-50 border-pink-200 scale-105 shadow-md' : 'bg-white/40 border-white/60 hover:bg-white/60'}`}
-              >
-                <div className="flex gap-3">
-                  <span className="text-[9px] font-black text-pink-300 bg-white px-1.5 py-0.5 rounded shadow-sm h-fit">#{item.id}</span>
-                  <p className="text-xs font-bold text-darkGrey leading-tight">{item.content}</p>
+          <div className="mb-4">
+            <select 
+              value={selectedBrowseCategory}
+              onChange={(e) => {
+                setSelectedBrowseCategory(e.target.value);
+                setSearchResult(null);
+              }}
+              className="w-full px-4 py-2.5 rounded-xl border-2 border-white bg-white/80 text-darkGrey font-bold text-sm focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all appearance-none"
+              style={{ backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%234A4A4A%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.6rem auto' }}
+            >
+              <option value="all">-- 请选择分类浏览 --</option>
+              {allCategories.map(cat => (
+                <option key={cat} value={cat}>{cat} ({topics.filter(t => t.category === cat).length}条)</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex-1 overflow-y-auto bg-white/40 rounded-2xl p-4 border border-white/50 shadow-inner">
+            {searchResult ? (
+              <div className="bg-white/80 p-4 rounded-xl shadow-sm border-l-4 border-pink-400 mb-4 animate-in zoom-in-95 duration-200">
+                 <div className="flex justify-between items-center mb-2">
+                   <span className="text-[10px] font-black bg-pink-100 text-pink-500 px-2 py-0.5 rounded uppercase">{searchResult.category}</span>
+                   <span className="text-[10px] text-gray-300 font-bold">ID: {searchResult.id}</span>
+                 </div>
+                 <p className="text-sm font-bold text-darkGrey">{searchResult.content}</p>
+              </div>
+            ) : searchError && (
+              <p className="text-red-500 text-xs font-bold text-center py-2">{searchError}</p>
+            )}
+
+            {browseList.length > 0 ? (
+              <div className="space-y-2">
+                {browseList.map(item => (
+                  <div 
+                    key={item.id} 
+                    className={`p-3 rounded-xl border transition-all ${searchResult?.id === item.id ? 'bg-pink-50 border-pink-200 scale-105 shadow-md' : 'bg-white/40 border-white/60 hover:bg-white/60'}`}
+                  >
+                    <div className="flex gap-3">
+                      <span className="text-[9px] font-black text-pink-300 bg-white px-1.5 py-0.5 rounded shadow-sm h-fit">#{item.id}</span>
+                      <p className="text-xs font-bold text-darkGrey leading-tight">{item.content}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : selectedBrowseCategory !== 'all' ? (
+              <p className="text-center text-gray-300 italic text-xs py-10">该分类下暂无内容</p>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-darkGrey/20 italic space-y-4 py-10">
+                <span className="text-5xl">🔭</span>
+                <p className="text-xs font-bold">选择分类或搜索 ID 开始探索</p>
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        /* 我的足迹模式 */
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-sm font-black text-pink-500 tracking-tight">时光印记</h3>
+            <button 
+              onClick={handleDownloadHistory}
+              className="bg-white/80 border-2 border-pink-200 text-pink-500 text-[10px] font-black px-3 py-1.5 rounded-full hover:bg-pink-50 transition-colors shadow-sm flex items-center gap-1.5"
+            >
+              <span>📥</span> 导出文本
+            </button>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto bg-white/40 rounded-2xl p-4 border border-white/50 shadow-inner">
+            {seenTopicsList.length > 0 ? (
+              <div className="space-y-3">
+                {seenTopicsList.map((item, idx) => (
+                  <div key={`${item.id}-${idx}`} className="bg-white/60 p-4 rounded-xl border border-white shadow-sm hover:translate-x-1 transition-transform">
+                    <div className="flex items-center gap-2 mb-2">
+                       <span className="text-[9px] font-black text-white bg-pink-300 px-2 py-0.5 rounded-full">#{item.id}</span>
+                       <span className="text-[9px] font-black text-gray-400 uppercase tracking-tighter">{item.category}</span>
+                    </div>
+                    <p className="text-xs font-bold text-darkGrey leading-relaxed italic">“{item.content}”</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-darkGrey/20 italic space-y-4 py-10 text-center">
+                <span className="text-5xl">👣</span>
+                <div>
+                  <p className="text-xs font-bold">还没有留下足迹</p>
+                  <p className="text-[10px] mt-1">去主页抽取几个话题试试吧！</p>
                 </div>
               </div>
-            ))}
+            )}
           </div>
-        ) : selectedBrowseCategory !== 'all' ? (
-          <p className="text-center text-gray-300 italic text-xs py-10">该分类下暂无内容</p>
-        ) : (
-          <div className="h-full flex flex-col items-center justify-center text-darkGrey/20 italic space-y-4 py-10">
-            <span className="text-5xl">🔭</span>
-            <p className="text-xs font-bold">选择分类或搜索 ID 开始探索</p>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 
@@ -342,12 +476,28 @@ const App: React.FC = () => {
         <button onClick={handleUrlSave} disabled={isLoading} className="w-full bg-darkGrey text-white py-4 rounded-2xl font-black active:scale-95 transition-transform shadow-lg disabled:opacity-50">
           {isLoading ? 'SYNCING...' : '同步云端数据'}
         </button>
+        
+        {/* 导入功能区 */}
+        <input 
+          type="file" 
+          ref={fileInputRef} 
+          onChange={handleImportHistory} 
+          accept=".txt" 
+          className="hidden" 
+        />
+        <button 
+          onClick={() => fileInputRef.current?.click()}
+          className="w-full bg-white text-darkGrey border-2 border-darkGrey/10 py-4 rounded-2xl font-black active:scale-95 transition-transform hover:bg-gray-50 flex items-center justify-center gap-2"
+        >
+          <span>📤</span> 导入历史足迹 (.txt)
+        </button>
+
         <button onClick={handleClearCache} className="w-full bg-white text-red-500 border-2 border-red-100 py-4 rounded-2xl font-black active:scale-95 transition-transform hover:bg-red-50">
           清除已读历史
         </button>
       </div>
       
-      <p className="text-center text-[9px] text-gray-300 mt-6 font-black uppercase tracking-widest">Version 1.4.0 • Stable</p>
+      <p className="text-center text-[9px] text-gray-300 mt-6 font-black uppercase tracking-widest">Version 1.6.0 • Stable</p>
     </div>
   );
 
